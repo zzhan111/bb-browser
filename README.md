@@ -69,7 +69,7 @@ bb-browser site reddit/hot --openclaw
 bb-browser site xueqiu/hot-stock 5 --openclaw --jq '.items[] | {name, changePercent}'
 ```
 
-Skill on ClawHub: [bb-browser-openclaw](https://clawhub.ai/yan5xu/bb-browser-openclaw)
+Skill on ClawHub: [bb-browser-openclaw](https://clawhub.ai/yan5xu/bb-browser)
 
 ### Chrome Extension (standalone mode)
 
