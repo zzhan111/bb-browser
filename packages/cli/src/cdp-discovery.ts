@@ -166,18 +166,6 @@ export async function discoverCdpPort(): Promise<{ host: string; port: number } 
     return { host: "127.0.0.1", port: explicitPort };
   }
 
-  if (process.argv.includes("--openclaw")) {
-    const viaOpenClaw = await tryOpenClaw();
-    if (viaOpenClaw && await canConnect(viaOpenClaw.host, viaOpenClaw.port)) {
-      return viaOpenClaw;
-    }
-  }
-
-  const detectedOpenClaw = await tryOpenClaw();
-  if (detectedOpenClaw && await canConnect(detectedOpenClaw.host, detectedOpenClaw.port)) {
-    return detectedOpenClaw;
-  }
-
   try {
     const rawPort = await readFile(MANAGED_PORT_FILE, "utf8");
     const managedPort = Number.parseInt(rawPort.trim(), 10);
@@ -187,5 +175,24 @@ export async function discoverCdpPort(): Promise<{ host: string; port: number } 
   } catch {
   }
 
-  return launchManagedBrowser();
+  if (process.argv.includes("--openclaw")) {
+    const viaOpenClaw = await tryOpenClaw();
+    if (viaOpenClaw && await canConnect(viaOpenClaw.host, viaOpenClaw.port)) {
+      return viaOpenClaw;
+    }
+  }
+
+  const launched = await launchManagedBrowser();
+  if (launched) {
+    return launched;
+  }
+
+  if (!process.argv.includes("--openclaw")) {
+    const detectedOpenClaw = await tryOpenClaw();
+    if (detectedOpenClaw && await canConnect(detectedOpenClaw.host, detectedOpenClaw.port)) {
+      return detectedOpenClaw;
+    }
+  }
+
+  return null;
 }

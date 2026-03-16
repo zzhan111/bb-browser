@@ -47,6 +47,11 @@ function parseTabSubcommand(args: string[], rawArgv?: string[]): {
 
   const first = args[0];
 
+  // tab list
+  if (first === "list") {
+    return { action: "tab_list" };
+  }
+
   // tab new [url]
   if (first === "new") {
     return { action: "tab_new", url: args[1] };
