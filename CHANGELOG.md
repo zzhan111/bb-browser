@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.2](https://github.com/epiral/bb-browser/compare/bb-browser-v0.11.1...bb-browser-v0.11.2) (2026-04-03)
+
+
+### Bug Fixes
+
+* CDP 503 returns diagnostics immediately instead of 30s timeout ([#157](https://github.com/epiral/bb-browser/issues/157)) ([67efdd3](https://github.com/epiral/bb-browser/commit/67efdd38fd70a872b67388e52a7df9d70422fe8f))
+* remove extension packaging from publish workflow ([#155](https://github.com/epiral/bb-browser/issues/155)) ([1931c55](https://github.com/epiral/bb-browser/commit/1931c5584160b8798281cd797718dcc4feb119bd))
+
 ## [0.11.1](https://github.com/epiral/bb-browser/compare/bb-browser-v0.11.0...bb-browser-v0.11.1) (2026-04-03)
 
 
