@@ -232,6 +232,15 @@ function convertBuildDomTreeResult(
   return { snapshot: lines.join("\n"), refs };
 }
 
+const CLEANUP_HIGHLIGHTS_SCRIPT = `(() => {
+  if (window._highlightCleanupFunctions && window._highlightCleanupFunctions.length) {
+    window._highlightCleanupFunctions.forEach(fn => { try { fn(); } catch {} });
+    window._highlightCleanupFunctions = [];
+  }
+  const c = document.getElementById('playwright-highlight-container');
+  if (c) c.remove();
+})()`;
+
 async function buildSnapshot(
   cdp: CdpConnection,
   targetId: string,
@@ -606,6 +615,7 @@ export async function dispatchRequest(
     }
 
     case "screenshot": {
+      await cdp.evaluate(target.id, CLEANUP_HIGHLIGHTS_SCRIPT, true).catch(() => {});
       const result = await cdp.sessionCommand<{ data: string }>(
         target.id,
         "Page.captureScreenshot",
