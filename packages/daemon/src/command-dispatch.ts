@@ -5,8 +5,9 @@
  * CdpConnection + TabStateManager for per-tab state and seq tracking.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type {
   Request,
@@ -621,10 +622,18 @@ export async function dispatchRequest(
         "Page.captureScreenshot",
         { format: "png", fromSurface: true },
       );
-      return ok(request.id, {
-        dataUrl: `data:image/png;base64,${result.data}`,
+      const dataDir = path.join(process.env.PINIX_HOME || path.join(os.homedir(), ".pinix"), "data", "browser", "screenshots");
+      mkdirSync(dataDir, { recursive: true });
+      const filename = `${Date.now()}.png`;
+      writeFileSync(path.join(dataDir, filename), Buffer.from(result.data, "base64"));
+      const data: Record<string, unknown> = {
+        path: `pinix://browser/screenshots/${filename}`,
         tab: shortId,
-      });
+      };
+      if (request.includeBase64) {
+        data.dataUrl = `data:image/png;base64,${result.data}`;
+      }
+      return ok(request.id, data);
     }
 
     // -----------------------------------------------------------------------
