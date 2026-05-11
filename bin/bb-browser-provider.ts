@@ -13,10 +13,14 @@ import {
   type ProviderMessage,
   type HubMessage,
   type InvokeCommand,
+  type DataCommand,
   ProviderMessageSchema,
   RegisterRequestSchema,
   ClipRegistrationSchema,
   InvokeResultSchema,
+  DataResultSchema,
+  DataEntrySchema,
+  DataStatSchema,
   HeartbeatSchema,
   HubErrorSchema,
 } from "@pinixai/hub-client";
@@ -31,10 +35,10 @@ import {
   isProcessAlive,
   httpJson,
 } from "../packages/shared/src/daemon-client.ts";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { unlink, readFile as readFileAsync } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { join, dirname, resolve, relative } from "node:path";
+import { join, dirname, resolve, relative, extname } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { z } from "zod";
@@ -406,6 +410,93 @@ async function executeSiteCommand(clipName: string, command: string, input: Inpu
 }
 
 // ---------------------------------------------------------------------------
+// Clip Data file I/O
+// ---------------------------------------------------------------------------
+
+import { homedir } from "node:os";
+import { statSync, readdirSync as readdirSyncNative } from "node:fs";
+
+const PINIX_DATA_ROOT = join(process.env.PINIX_HOME || join(homedir(), ".pinix"), "data");
+
+function clipDataDir(clipName: string): string {
+  return join(PINIX_DATA_ROOT, clipName);
+}
+
+function validateDataPath(p: string): void {
+  if (!p && p !== "") return;
+  if (p.startsWith("/") || p.startsWith("\\")) throw new Error("Absolute paths not allowed");
+  const cleaned = p.replace(/\\/g, "/").split("/").filter(s => s !== ".");
+  if (cleaned.some(s => s === "..")) throw new Error(`Path "${p}" escapes data directory`);
+}
+
+function guessMime(name: string): string {
+  const ext = extname(name).toLowerCase();
+  const map: Record<string, string> = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".svg": "image/svg+xml", ".json": "application/json",
+    ".txt": "text/plain", ".html": "text/html", ".css": "text/css", ".js": "application/javascript",
+    ".pdf": "application/pdf", ".mp4": "video/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+async function handleDataCommand(cmd: DataCommand): Promise<Uint8Array> {
+  const clipName = cmd.clipName?.trim() || "";
+  const operation = cmd.operation?.trim().toLowerCase() || "";
+  const dataPath = cmd.path?.trim() || "";
+
+  if (!clipName) throw new Error("clip_name is required");
+  if (!operation) throw new Error("operation is required");
+  if (operation !== "list" && !dataPath) throw new Error("path is required");
+  validateDataPath(dataPath);
+
+  const dataDir = clipDataDir(clipName);
+  const fullPath = dataPath ? join(dataDir, dataPath) : dataDir;
+
+  switch (operation) {
+    case "read": {
+      const content = await readFileAsync(fullPath);
+      return textEncoder.encode(JSON.stringify({ content: Buffer.from(content).toString("base64") }));
+    }
+    case "write": {
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, cmd.content);
+      const uri = `pinix://${clipName}/${dataPath}`;
+      return textEncoder.encode(JSON.stringify({ uri }));
+    }
+    case "list": {
+      mkdirSync(fullPath, { recursive: true });
+      const entries = readdirSyncNative(fullPath, { withFileTypes: true }).map(e => {
+        const entryPath = dataPath ? `${dataPath}/${e.name}` : e.name;
+        let size = 0;
+        try { size = statSync(join(fullPath, e.name)).size; } catch {}
+        return {
+          name: e.name,
+          path: `pinix://${clipName}/${entryPath}`,
+          type: e.isDirectory() ? "directory" : "file",
+          size,
+          mime: e.isDirectory() ? "" : guessMime(e.name),
+        };
+      });
+      return textEncoder.encode(JSON.stringify({ entries }));
+    }
+    case "delete": {
+      const { unlinkSync: unlinkSyncNative } = await import("node:fs");
+      unlinkSyncNative(fullPath);
+      return textEncoder.encode(JSON.stringify({ uri: `pinix://${clipName}/${dataPath}` }));
+    }
+    case "stat": {
+      const info = statSync(fullPath);
+      return textEncoder.encode(JSON.stringify({
+        stat: { size: info.size, mime: guessMime(dataPath), modified: info.mtime.toISOString() },
+      }));
+    }
+    default:
+      throw new Error(`Unsupported data operation: ${operation}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AsyncMessageQueue
 // ---------------------------------------------------------------------------
 
@@ -538,6 +629,10 @@ class HubBridge {
             void this.handleInvoke(queue, msg.payload.value);
             break;
           }
+          case "dataCommand": {
+            void this.handleData(queue, msg.payload.value);
+            break;
+          }
           case "invokeInput": break; // unary commands only
           case "pong": break;
           case "getClipWebCommand": break; // no web assets
@@ -577,6 +672,60 @@ class HubBridge {
       this.send(queue, requestId, encodeOutput(result), undefined);
     } catch (err) {
       this.send(queue, requestId, undefined, err);
+    }
+  }
+
+  private async handleData(queue: AsyncMessageQueue<ProviderMessage>, cmd: DataCommand): Promise<void> {
+    const requestId = cmd.requestId?.trim();
+    if (!requestId) return;
+
+    try {
+      const output = await handleDataCommand(cmd);
+      this.sendDataResult(queue, requestId, output, undefined);
+    } catch (err) {
+      this.sendDataResult(queue, requestId, undefined, err);
+    }
+  }
+
+  private sendDataResult(queue: AsyncMessageQueue<ProviderMessage>, requestId: string, output: Uint8Array | undefined, error: unknown): void {
+    try {
+      const hubError = error
+        ? create(HubErrorSchema, { code: "internal", message: error instanceof Error ? error.message : String(error) })
+        : undefined;
+      // Parse the JSON output into DataResult fields
+      let parsed: Record<string, unknown> = {};
+      if (output) {
+        try { parsed = JSON.parse(textDecoder.decode(output)); } catch {}
+      }
+      queue.push(create(ProviderMessageSchema, {
+        payload: {
+          case: "dataResult",
+          value: create(DataResultSchema, {
+            requestId,
+            content: parsed.content ? new Uint8Array(Buffer.from(parsed.content as string, "base64")) : undefined,
+            uri: (parsed.uri as string) || "",
+            entries: Array.isArray(parsed.entries)
+              ? (parsed.entries as Array<Record<string, unknown>>).map(e => create(DataEntrySchema, {
+                  name: (e.name as string) || "",
+                  path: (e.path as string) || "",
+                  type: (e.type as string) || "file",
+                  size: BigInt((e.size as number) || 0),
+                  mime: (e.mime as string) || "",
+                }))
+              : [],
+            stat: parsed.stat
+              ? create(DataStatSchema, {
+                  size: BigInt(((parsed.stat as Record<string, unknown>).size as number) || 0),
+                  mime: ((parsed.stat as Record<string, unknown>).mime as string) || "",
+                  modified: ((parsed.stat as Record<string, unknown>).modified as string) || "",
+                })
+              : undefined,
+            error: hubError,
+          }),
+        },
+      }));
+    } catch (e) {
+      if (!this.stopped) console.error(`${LOG_PREFIX} Failed to send data result: ${e instanceof Error ? e.message : e}`);
     }
   }
 
