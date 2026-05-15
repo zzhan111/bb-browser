@@ -8,6 +8,8 @@
  * Key change: chrome.runtime.sendMessage → window.__bbBrowserTraceBinding()
  */
 
+export const TRACE_PREFIX = "__BB_BROWSER_TRACE_8fd3__:";
+
 export const TRACE_INJECTION_SCRIPT = `
 (function() {
   if (window.__bbBrowserTraceInjected) return;
@@ -90,7 +92,7 @@ export const TRACE_INJECTION_SCRIPT = `
   }
 
   function emit(eventObj) {
-    console.log('__BB_TRACE__:' + JSON.stringify(eventObj));
+    console.log('__BB_BROWSER_TRACE_8fd3__:' + JSON.stringify(eventObj));
   }
 
   // ---- Click handler ----
