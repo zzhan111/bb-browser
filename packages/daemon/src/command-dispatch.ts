@@ -15,7 +15,6 @@ import type {
   ResponseData,
   RefInfo,
   SnapshotData,
-  TraceEvent,
   TraceStatus,
 } from "@bb-browser/shared";
 import { CdpConnection, type CdpTargetInfo } from "./cdp-connection.js";
@@ -495,13 +494,6 @@ async function getAttributeValue(
   );
   return String(call.result.value ?? "");
 }
-
-// ---------------------------------------------------------------------------
-// Trace state (global, not per-tab — matches original behavior)
-// ---------------------------------------------------------------------------
-
-let traceRecording = false;
-const traceEvents: TraceEvent[] = [];
 
 // ---------------------------------------------------------------------------
 // Main dispatch
@@ -1066,25 +1058,30 @@ export async function dispatchRequest(
       const subCommand = request.traceCommand ?? "status";
       switch (subCommand) {
         case "start":
-          traceRecording = true;
-          traceEvents.length = 0;
+          tab.traceRecording = true;
+          tab.clearTrace();
+          await cdp.startTraceInjection(target.id);
           return ok(request.id, {
             traceStatus: { recording: true, eventCount: 0 } satisfies TraceStatus,
             tab: shortId,
           });
         case "stop": {
-          traceRecording = false;
+          tab.traceRecording = false;
+          await cdp.stopTraceInjection(target.id);
+          const traceResult = tab.getTraceEvents();
           return ok(request.id, {
-            traceEvents: [...traceEvents],
-            traceStatus: { recording: false, eventCount: traceEvents.length } satisfies TraceStatus,
+            traceEvents: traceResult.items,
+            traceStatus: { recording: false, eventCount: traceResult.items.length } satisfies TraceStatus,
             tab: shortId,
           });
         }
-        case "status":
+        case "status": {
+          const count = tab.traceEvents.size;
           return ok(request.id, {
-            traceStatus: { recording: traceRecording, eventCount: traceEvents.length } satisfies TraceStatus,
+            traceStatus: { recording: tab.traceRecording, eventCount: count } satisfies TraceStatus,
             tab: shortId,
           });
+        }
         default:
           return fail(request.id, `Unknown trace subcommand: ${subCommand}`);
       }

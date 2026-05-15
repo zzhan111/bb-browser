@@ -9,7 +9,9 @@
 
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
+import type { TraceEvent } from "@bb-browser/shared";
 import { TabStateManager } from "./tab-state.js";
+import { TRACE_INJECTION_SCRIPT } from "./trace-inject.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -229,6 +231,7 @@ export class CdpConnection {
         return;
       }
 
+
       // Flat-mode attach
       if (message.method === "Target.attachedToTarget") {
         const params = message.params as JsonObject;
@@ -338,6 +341,15 @@ export class CdpConnection {
       return;
     }
 
+    // Trace: re-inject event listeners after navigation
+    if (method === "Page.frameNavigated") {
+      if (tab.traceRecording) {
+        this.evaluate(targetId, TRACE_INJECTION_SCRIPT, true).catch(() => {});
+      }
+      return;
+    }
+
+
     // Network events
     if (method === "Network.requestWillBeSent") {
       const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
@@ -397,6 +409,39 @@ export class CdpConnection {
       // Chrome CDP sends "warning" for console.warn(); normalize it
       const consoleTypeMap: Record<string, string> = { warning: "warn" };
       const normalizedType = consoleTypeMap[type] || type;
+      // Trace: intercept console.log fallback from injected listeners
+      if (text.startsWith("__BB_TRACE__:") && tab.traceRecording) {
+        try {
+          const payload = text.slice("__BB_TRACE__:".length);
+          const parsed = JSON.parse(payload) as {
+            type: string; timestamp: number; url: string;
+            ref?: number; xpath?: string; cssSelector?: string;
+            value?: string; key?: string; direction?: string;
+            pixels?: number; checked?: boolean;
+            elementRole?: string; elementName?: string; elementTag?: string;
+          };
+          tab.addTraceEvent({
+            type: parsed.type as TraceEvent["type"],
+            timestamp: parsed.timestamp ?? Date.now(),
+            url: parsed.url ?? "",
+            ref: parsed.ref,
+            xpath: parsed.xpath,
+            cssSelector: parsed.cssSelector,
+            value: parsed.value,
+            key: parsed.key,
+            direction: (parsed.direction as "up" | "down") ?? undefined,
+            pixels: parsed.pixels,
+            checked: parsed.checked,
+            elementRole: parsed.elementRole,
+            elementName: parsed.elementName,
+            elementTag: parsed.elementTag,
+          });
+          return; // Don't add to regular console messages
+        } catch {
+          // Parse failed — fall through to regular console handler
+        }
+      }
+
       tab.addConsoleMessage({
         type: ["log", "info", "warn", "error", "debug"].includes(normalizedType)
           ? (normalizedType as "log" | "info" | "warn" | "error" | "debug")
@@ -620,6 +665,18 @@ export class CdpConnection {
       method,
       frameId ? { ...params, frameId } : params,
     );
+  }
+
+  /** Inject trace event listeners into a page (start recording). */
+  async startTraceInjection(targetId: string): Promise<void> {
+    // Inject DOM event listener script that uses console.log for event reporting
+    await this.evaluate(targetId, TRACE_INJECTION_SCRIPT, true);
+    await this.evaluate(targetId, "window.__bbBrowserTraceRecording = true", true);
+  }
+
+  /** Remove trace recording flag from a page (stop recording). */
+  async stopTraceInjection(targetId: string): Promise<void> {
+    await this.evaluate(targetId, "window.__bbBrowserTraceRecording = false", true);
   }
 
   /**
