@@ -16,6 +16,7 @@ import type {
   ConsoleMessageInfo,
   JSErrorInfo,
   RefInfo,
+  TraceEvent,
 } from "@bb-browser/shared";
 import { RingBuffer } from "./ring-buffer.js";
 
@@ -26,6 +27,7 @@ import { RingBuffer } from "./ring-buffer.js";
 export type SeqNetworkRequest = NetworkRequestInfo & { seq: number };
 export type SeqConsoleMessage = ConsoleMessageInfo & { seq: number };
 export type SeqJSError = JSErrorInfo & { seq: number };
+export type SeqTraceEvent = TraceEvent & { seq: number };
 
 // ---------------------------------------------------------------------------
 // Per-tab state
@@ -34,6 +36,7 @@ export type SeqJSError = JSErrorInfo & { seq: number };
 const NETWORK_CAPACITY = 500;
 const CONSOLE_CAPACITY = 200;
 const ERRORS_CAPACITY = 100;
+const TRACE_CAPACITY = 1000;
 
 export class TabState {
   readonly targetId: string;
@@ -57,6 +60,12 @@ export class TabState {
 
   /** Dialog auto-handler config. */
   dialogHandler: { accept: boolean; promptText?: string } | null = null;
+
+  /** Trace recording flag. */
+  traceRecording = false;
+
+  /** Trace events buffer. */
+  traceEvents = new RingBuffer<SeqTraceEvent>(TRACE_CAPACITY);
 
   constructor(
     targetId: string,
@@ -121,6 +130,33 @@ export class TabState {
   addJSError(info: Omit<JSErrorInfo, never>): void {
     const seq = this.nextSeq();
     this.jsErrors.push({ ...info, seq });
+  }
+
+  // --------------- Trace events ---------------
+
+  addTraceEvent(info: TraceEvent): void {
+    const seq = this.nextSeq();
+    this.traceEvents.push({ ...info, seq });
+  }
+
+  getTraceEvents(options?: {
+    since?: number | "last_action";
+    limit?: number;
+  }): { items: SeqTraceEvent[]; cursor: number } {
+    let items = this.traceEvents.toArray();
+    if (options?.since !== undefined) {
+      const threshold =
+        options.since === "last_action" ? this.lastActionSeq : options.since;
+      items = items.filter((item) => item.seq > threshold);
+    }
+    if (options?.limit !== undefined && options.limit > 0 && items.length > options.limit) {
+      items = items.slice(-options.limit);
+    }
+    const sinceThreshold = options?.since !== undefined
+      ? (options.since === "last_action" ? this.lastActionSeq : options.since)
+      : 0;
+    const cursor = items.length > 0 ? Math.max(...items.map((i) => i.seq)) : sinceThreshold;
+    return { items, cursor };
   }
 
   // --------------- Query helpers ---------------
@@ -253,6 +289,10 @@ export class TabState {
 
   clearErrors(): void {
     this.jsErrors.clear();
+  }
+
+  clearTrace(): void {
+    this.traceEvents.clear();
   }
 }
 
