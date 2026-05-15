@@ -11,7 +11,7 @@ import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import type { TraceEvent } from "@bb-browser/shared";
 import { TabStateManager } from "./tab-state.js";
-import { TRACE_INJECTION_SCRIPT } from "./trace-inject.js";
+import { TRACE_INJECTION_SCRIPT, TRACE_PREFIX } from "./trace-inject.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -410,9 +410,9 @@ export class CdpConnection {
       const consoleTypeMap: Record<string, string> = { warning: "warn" };
       const normalizedType = consoleTypeMap[type] || type;
       // Trace: intercept console.log fallback from injected listeners
-      if (text.startsWith("__BB_TRACE__:") && tab.traceRecording) {
+      if (text.startsWith(TRACE_PREFIX) && tab.traceRecording) {
         try {
-          const payload = text.slice("__BB_TRACE__:".length);
+          const payload = text.slice(TRACE_PREFIX.length);
           const parsed = JSON.parse(payload) as {
             type: string; timestamp: number; url: string;
             ref?: number; xpath?: string; cssSelector?: string;
@@ -420,21 +420,29 @@ export class CdpConnection {
             pixels?: number; checked?: boolean;
             elementRole?: string; elementName?: string; elementTag?: string;
           };
+          const allowedTypes = new Set(["click", "fill", "select", "press", "scroll", "check"]);
+          if (!parsed || typeof parsed.type !== "string" || !allowedTypes.has(parsed.type)) {
+            return;
+          }
+          const direction = parsed.direction === "up" || parsed.direction === "down" ? parsed.direction : undefined;
+          const pickStr = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+          const pickNum = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+          const pickBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
           tab.addTraceEvent({
             type: parsed.type as TraceEvent["type"],
-            timestamp: parsed.timestamp ?? Date.now(),
-            url: parsed.url ?? "",
-            ref: parsed.ref,
-            xpath: parsed.xpath,
-            cssSelector: parsed.cssSelector,
-            value: parsed.value,
-            key: parsed.key,
-            direction: (parsed.direction as "up" | "down") ?? undefined,
-            pixels: parsed.pixels,
-            checked: parsed.checked,
-            elementRole: parsed.elementRole,
-            elementName: parsed.elementName,
-            elementTag: parsed.elementTag,
+            timestamp: typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now(),
+            url: pickStr(parsed.url) ?? "",
+            ref: pickNum(parsed.ref),
+            xpath: pickStr(parsed.xpath),
+            cssSelector: pickStr(parsed.cssSelector),
+            value: pickStr(parsed.value),
+            key: pickStr(parsed.key),
+            direction,
+            pixels: pickNum(parsed.pixels),
+            checked: pickBool(parsed.checked),
+            elementRole: pickStr(parsed.elementRole),
+            elementName: pickStr(parsed.elementName),
+            elementTag: pickStr(parsed.elementTag),
           });
           return; // Don't add to regular console messages
         } catch {
@@ -672,6 +680,18 @@ export class CdpConnection {
     // Inject DOM event listener script that uses console.log for event reporting
     await this.evaluate(targetId, TRACE_INJECTION_SCRIPT, true);
     await this.evaluate(targetId, "window.__bbBrowserTraceRecording = true", true);
+    // Health check: verify the injection actually took effect (e.g. console.log
+    // wasn't overridden, no CSP/sandbox blocking the script).
+    const injected = await this.evaluate<boolean>(
+      targetId,
+      "!!window.__bbBrowserTraceInjected",
+      true,
+    );
+    if (!injected) {
+      throw new Error(
+        "Trace injection failed: __bbBrowserTraceInjected flag not set (page may override console or block script execution)",
+      );
+    }
   }
 
   /** Remove trace recording flag from a page (stop recording). */
